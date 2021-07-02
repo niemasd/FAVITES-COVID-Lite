@@ -128,7 +128,7 @@ def simulate_transmission_network_saapphiire(
     makedirs(gemf_tmp_dir, exist_ok=True)
 
     # initialize GEMF stuff
-    gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
+    global gemf_state_to_num; gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
     global gemf_num_to_state; gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
     freq_sum = 0
     for state in gemf_state_to_num.keys():
@@ -163,7 +163,7 @@ def simulate_transmission_network_saapphiire(
     para_file.write("0\t" + str(s_to_e_by_a1) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
     para_file.write("0\t" + str(s_to_e_by_a2) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
     para_file.write("[STATUS_BEGIN]\n0\n\n")
-    infectious = ['E', 'P1','P2','I1','I2','A1','A2']
+    global infectious; infectious = ['E', 'P1','P2','I1','I2','A1','A2']
     para_file.write("[INDUCER_LIST]\n" + ' '.join([str(gemf_state_to_num[i]) for i in infectious]) + "\n\n")
     para_file.write("[SIM_ROUNDS]\n1\n\n")
     para_file.write("[INTERVAL_NUM]\n1\n\n")
@@ -256,14 +256,35 @@ def simulate_transmission_network_saapphiire(
     print_log("Transmission Network simulation complete: %s" % out_fn)
 
 # sample people the first time they're ascertained
-def sample_first_ascertained(gemf_output_fn, out_fn):
+def sample_first_ascertained(end_time, gemf_output_fn, out_fn):
     print_log("Sample Time Model: Fist Time Ascertained")
-    sample_time = dict()
+
+    # parse ascertained and removed times
+    global ascertained; ascertained= set()
+    inf_time = dict(); sample_time = dict(); removed_time = dict()
     for line in open(gemf_output_fn):
         t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
-        v = int(v); post = int(post)
-        if v not in sample_time and gemf_num_to_state[post] in {'I1','I2'}:
-            sample_time[v] = float(t)
+        v = int(v); post = int(post); t = float(t)
+        post_state = gemf_num_to_state[post]
+        if post_state in infectious and v not in inf_time: # infected
+            inf_time[v] = t
+        if post_state in {'I1','I2'} and v not in sample_time: # ascertained
+            sample_time[v] = t
+            ascertained.add(v)
+        if post_state == 'R' and v not in removed_time: # removed
+            removed_time[v] = t
+
+    # for people who weren't ever removed, make their "removed time" be the end time
+    for node in inf_time:
+        if node in sample_time:
+            continue
+        if node in removed_time:
+            r = removed_time[node]
+        else:
+            r = end_time
+        sample_time[node] = uniform(inf_time[node], r)
+
+    # output sample times
     out_file = open(out_fn, 'w')
     for node in sample_time:
         out_file.write("%d\t%s\n" % (node, sample_time[node]))
@@ -329,10 +350,14 @@ def simulate_sequences_gtr(a2c, a2g, a2t, c2g, c2t, g2t, f_a, f_c, f_g, f_t, anc
     command = [path_seqgen, '-of', '-k1', '-mGTR', '-r', str(a2c), str(a2g), str(a2t), str(c2g), str(c2t), str(g2t), '-f', str(f_a), str(f_c), str(f_g), str(f_t), '-of', phy_fn]
     print_log("Seq-Gen Command: %s" % ' '.join(command))
     out_file = open(out_fn, 'w')
-    seqgen_log_file = open("%s/%s" % ('/'.join(out_fn.split('/')[:-1]), SEQGEN_LOG_FN), 'w')
-    if call(command, stdout=out_file, stderr=seqgen_log_file) != 0:
-        raise RuntimeError("Error when running: %s" % path_seqgen)
+    seqgen_log_fn = "%s/%s" % ('/'.join(out_fn.split('/')[:-1]), SEQGEN_LOG_FN)
+    seqgen_log_file = open(seqgen_log_fn, 'w')
+    call(command, stdout=out_file, stderr=seqgen_log_file)
     seqgen_log_file.close(); out_file.close()
+    # have to manually check for errors (Seq-Gen exits with status 0)
+    for l in open(seqgen_log_fn):
+        if l.startswith("Error") or 'Bad state in ancestoral sequence' in l:
+            raise RuntimeError("Error when running: %s" % path_seqgen)
     print_log("Sequence simulation complete: %s" % out_fn)
 
 # main execution
@@ -387,7 +412,7 @@ if __name__ == "__main__":
     # determine sample times
     st_fn = "%s/sample_times.txt" % args.output
     print_log("===== SAMPLE TIMES =====")
-    sample_first_ascertained("%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
+    sample_first_ascertained(args.tn_end_time, "%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
     print_log()
     
     # simulate phylogeny (unit of time)
