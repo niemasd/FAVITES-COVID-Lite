@@ -73,8 +73,10 @@ def parse_args():
         parser.add_argument('--tn_%s' % tn_param, required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter '%s'" % tn_param)
     parser.add_argument('--tn_num_seeds', required=True, type=int, help="Transmission Network: SAAPPHIIRE Parameter: Number of Seeds")
     parser.add_argument('--tn_end_time', required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter: End Time")
+    parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny: Coalescent Intra-host Effective Population Size")
     parser.add_argument('--path_ngg_barabasi_albert', required=False, type=str, default='ngg_barabasi_albert', help="Path to 'ngg_barabasi_albert' executable")
     parser.add_argument('--path_gemf', required=False, type=str, default='GEMF', help="Path to 'GEMF' executable")
+    parser.add_argument('--path_coatran_constant', required=False, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
     parser.add_argument('--gzip_output', action='store_true', help="Gzip Compress Output Files")
     parser.add_argument('--version', action='store_true', help="Display Version")
     return parser.parse_args()
@@ -116,7 +118,7 @@ def simulate_transmission_network_saapphiire(
 
     # initialize GEMF stuff
     gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
-    gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
+    global gemf_num_to_state; gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
     freq_sum = 0
     for state in gemf_state_to_num.keys():
         param = "freq_%s" % state.lower()
@@ -180,6 +182,7 @@ def simulate_transmission_network_saapphiire(
     print_log("Wrote GEMF '%s' file: %s" % (GEMF_NETWORK_FN, network_fn))
 
     # write GEMF status file
+    out_file = open(out_fn, 'w')
     status_fn = "%s/%s" % (gemf_tmp_dir, GEMF_STATUS_FN)
     status_file = open(status_fn, 'w')
     seeds = set(sample(range(max_node_label+1), k=num_seeds))
@@ -188,6 +191,7 @@ def simulate_transmission_network_saapphiire(
         if node in seeds:
             status_file.write("%d\n" % gemf_state_to_num['P1'])
             gemf_state.append(gemf_state_to_num['P1'])
+            out_file.write("None\t%d\t0\n" % node)
         else:
             status_file.write("%d\n" % gemf_state_to_num['S'])
             gemf_state.append(gemf_state_to_num['S'])
@@ -204,6 +208,7 @@ def simulate_transmission_network_saapphiire(
         raise RuntimeError("Error when running: %s" % path_gemf)
     gemf_log_file.close()
     chdir(orig_dir)
+    print_log("Finished running GEMF")
 
     # reload edge-based matrices for ease of use
     matrices = open("%s/%s" % (gemf_tmp_dir, GEMF_PARA_FN)).read().strip()
@@ -213,7 +218,6 @@ def simulate_transmission_network_saapphiire(
     matrices[gemf_state_to_num['S']] = outside_infection_matrix
 
     # convert GEMF output to FAVITES transmission network format
-    out_file = open(out_fn, 'w')
     for line in open("%s/%s" % (gemf_tmp_dir, GEMF_OUTPUT_FN)):
         t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
         v,pre,post = int(v),int(pre),int(post)
@@ -238,6 +242,34 @@ def simulate_transmission_network_saapphiire(
                 u = "None"
             out_file.write("%s\t%s\t%s\n" % (u,v,t))
         gemf_state[v] = post
+    print_log("Transmission Network simulation complete: %s" % out_fn)
+
+# sample people the first time they're ascertained
+def sample_first_ascertained(gemf_output_fn, out_fn):
+    print_log("Sample Time Model: Fist Time Ascertained")
+    sample_time = dict()
+    for line in open(gemf_output_fn):
+        t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
+        v = int(v); post = int(post)
+        if v not in sample_time and gemf_num_to_state[post] in {'I1','I2'}:
+            sample_time[v] = float(t)
+    out_file = open(out_fn, 'w')
+    for node in sample_time:
+        out_file.write("%d\t%s\n" % (node, sample_time[node]))
+    out_file.close()
+    print_log("Sample time selection complete: %s" % out_fn)
+
+# simulate phylogeny (unit of time) under coalescent with constant intra-host effective population size
+def simulate_phylogeny_coalescent_constant(eff_pop_size, tn_fn, st_fn, out_fn, path_coatran_constant):
+    print_log("Phylogenetic Model: Coalescent with Constant Effective Population Size")
+    print_log("Coalescent Parameter 'effective population size': %s" % eff_pop_size)
+    command = [path_coatran_constant, tn_fn, st_fn, str(eff_pop_size)]
+    print_log("CoaTran Command: %s" % ' '.join(command))
+    out_file = open(out_fn, 'w')
+    if call(command, stdout=out_file) != 0:
+        raise RuntimeError("Error when running: %s" % path_coatran_constant)
+    out_file.close()
+    print_log("Phylogeny simulation complete: %s" % out_fn)
 
 # main execution
 if __name__ == "__main__":
@@ -287,6 +319,18 @@ if __name__ == "__main__":
         # paths
         cn_fn, tn_gemf_tmp_dir, tn_fn, args.path_gemf)
     print_log()
+
+    # determine sample times
+    st_fn = "%s/sample_times.txt" % args.output
+    print_log("===== SAMPLE TIMES =====")
+    sample_first_ascertained("%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
+    print_log()
+    
+    # simulate phylogeny (unit of time)
+    pt_time_fn = "%s/tree.time.nwk" % args.output
+    print_log("===== PHYLOGENY =====")
+    simulate_phylogeny_coalescent_constant(args.pt_eff_pop_size, tn_fn, st_fn, pt_time_fn, args.path_coatran_constant)
+    exit(1) # TODO CONTINUE HERE
 
     # gzip output files (if requested)
     if args.gzip_output:
