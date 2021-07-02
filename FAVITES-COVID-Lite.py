@@ -6,6 +6,7 @@ from os.path import isdir, isfile
 from random import sample, uniform
 from subprocess import call
 from sys import argv, stdout
+from treeswift import read_tree_newick
 import argparse
 
 # useful constants
@@ -73,7 +74,8 @@ def parse_args():
         parser.add_argument('--tn_%s' % tn_param, required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter '%s'" % tn_param)
     parser.add_argument('--tn_num_seeds', required=True, type=int, help="Transmission Network: SAAPPHIIRE Parameter: Number of Seeds")
     parser.add_argument('--tn_end_time', required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter: End Time")
-    parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny: Coalescent Intra-host Effective Population Size")
+    parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny (Time): Coalescent Intra-host Effective Population Size")
+    parser.add_argument('--pm_mut_rate', required=True, type=float, help="Phylogeny (Mutations): Mutation Rate")
     parser.add_argument('--path_ngg_barabasi_albert', required=False, type=str, default='ngg_barabasi_albert', help="Path to 'ngg_barabasi_albert' executable")
     parser.add_argument('--path_gemf', required=False, type=str, default='GEMF', help="Path to 'GEMF' executable")
     parser.add_argument('--path_coatran_constant', required=False, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
@@ -271,6 +273,21 @@ def simulate_phylogeny_coalescent_constant(eff_pop_size, tn_fn, st_fn, out_fn, p
     out_file.close()
     print_log("Phylogeny simulation complete: %s" % out_fn)
 
+# scale phylogeny (to unit of mutations)
+def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
+    print_log("Mutation Rate Model: Constant")
+    print_log("Mutation Rate: %s" % mut_rate)
+    time_tree = read_tree_newick(pt_fn)
+    if isinstance(time_tree, list):
+        raise RuntimeError("No phylogeny was simulated. Try changing your parameters or running again")
+    for node in time_tree.traverse_preorder():
+        if node.edge_length is not None:
+            node.edge_length *= mut_rate
+        if not node.is_leaf() and node.label is not None: # seq-gen doesn't support internal node labels
+            node.label = None
+    time_tree.write_tree_newick(out_fn)
+    print_log("Mutation rate scaling complete: %s" % out_fn)
+
 # main execution
 if __name__ == "__main__":
     # parse and check user args
@@ -327,15 +344,24 @@ if __name__ == "__main__":
     print_log()
     
     # simulate phylogeny (unit of time)
-    pt_time_fn = "%s/tree.time.nwk" % args.output
+    pt_fn = "%s/tree.time.nwk" % args.output
     print_log("===== PHYLOGENY =====")
-    simulate_phylogeny_coalescent_constant(args.pt_eff_pop_size, tn_fn, st_fn, pt_time_fn, args.path_coatran_constant)
-    exit(1) # TODO CONTINUE HERE
+    simulate_phylogeny_coalescent_constant(args.pt_eff_pop_size, tn_fn, st_fn, pt_fn, args.path_coatran_constant)
+    print_log()
+
+    # scale phylogeny (to unit of mutations)
+    pm_fn = "%s/tree.mutations.nwk" % args.output
+    print_log("===== MUTATION RATE =====")
+    scale_tree_mutation_rate_constant(args.pm_mut_rate, pt_fn, pm_fn)
+    print_log()
+
+    # simulate sequences
+    # TODO
 
     # gzip output files (if requested)
     if args.gzip_output:
         print_log("===== GZIP OUTPUT FILES =====")
-        fns_to_compress = [cn_fn, tn_fn] + list(glob('%s/*' % tn_gemf_tmp_dir))
+        fns_to_compress = [cn_fn, tn_fn, pt_fn, pm_fn] + list(glob('%s/*' % tn_gemf_tmp_dir))
         for fn in fns_to_compress:
             command = ['gzip', '-9', fn]
             if call(command) != 0:
