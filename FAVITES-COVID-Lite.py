@@ -18,6 +18,7 @@ GEMF_NETWORK_FN = 'network.txt'
 GEMF_STATUS_FN = 'status.txt'
 GEMF_OUTPUT_FN = 'output.txt'
 GEMF_LOG_FN = 'log.txt'
+SEQGEN_LOG_FN = 'seqgen_log.txt'
 SAAPPHIIRE_PARAMS = [
     # transition rates
     's_to_e_seed', 'e_to_p1', 'p1_to_p2', 'p2_to_i1', 'p2_to_a1', 'i1_to_i2', 'i1_to_h', 'i2_to_h', 'i2_to_r',
@@ -26,6 +27,10 @@ SAAPPHIIRE_PARAMS = [
 
     # initial state frequencies
     'freq_s', 'freq_e', 'freq_p1', 'freq_p2', 'freq_i1', 'freq_i2', 'freq_a1', 'freq_a2', 'freq_h', 'freq_r',
+]
+GTR_PARAMS = [
+    'a2c', 'a2g', 'a2t', 'c2g', 'c2t', 'g2t',
+    'f_a', 'f_c', 'f_g', 'f_t',
 ]
 
 # check if user is just printing version
@@ -76,9 +81,13 @@ def parse_args():
     parser.add_argument('--tn_end_time', required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter: End Time")
     parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny (Time): Coalescent Intra-host Effective Population Size")
     parser.add_argument('--pm_mut_rate', required=True, type=float, help="Phylogeny (Mutations): Mutation Rate")
+    for seq_param in GTR_PARAMS:
+        parser.add_argument('--seq_%s' % seq_param, required=True, type=float, help="Sequences: GTR Parameter '%s'" % seq_param)
+    parser.add_argument('--seq_anc', required=True, type=str, help="Sequences: Ancestral Sequence")
     parser.add_argument('--path_ngg_barabasi_albert', required=False, type=str, default='ngg_barabasi_albert', help="Path to 'ngg_barabasi_albert' executable")
     parser.add_argument('--path_gemf', required=False, type=str, default='GEMF', help="Path to 'GEMF' executable")
     parser.add_argument('--path_coatran_constant', required=False, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
+    parser.add_argument('--path_seqgen', required=False, type=str, default='seq-gen', help="Path to 'seq-gen' executable")
     parser.add_argument('--gzip_output', action='store_true', help="Gzip Compress Output Files")
     parser.add_argument('--version', action='store_true', help="Display Version")
     return parser.parse_args()
@@ -273,7 +282,7 @@ def simulate_phylogeny_coalescent_constant(eff_pop_size, tn_fn, st_fn, out_fn, p
     out_file.close()
     print_log("Phylogeny simulation complete: %s" % out_fn)
 
-# scale phylogeny (to unit of mutations)
+# scale phylogeny (to unit of mutations) using constant mutation rate
 def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
     print_log("Mutation Rate Model: Constant")
     print_log("Mutation Rate: %s" % mut_rate)
@@ -287,6 +296,44 @@ def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
             node.label = None
     time_tree.write_tree_newick(out_fn)
     print_log("Mutation rate scaling complete: %s" % out_fn)
+
+# simulate sequences under GTR model
+def simulate_sequences_gtr(a2c, a2g, a2t, c2g, c2t, g2t, f_a, f_c, f_g, f_t, anc, pm_fn, out_fn, path_seqgen):
+    print_log("Substitution Model: GTR")
+    for param in GTR_PARAMS:
+        print_log("Substitution Parameter '%s': %s" % (param, locals()[param]))
+    IDs = list()
+    try:
+        lines = [l.strip() for l in open(anc).read().strip().splitlines()]
+        anc = ''
+        for l in lines:
+            if l.startswith('>'):
+                IDs.append(l[1:])
+            else:
+                anc += l
+    except:
+        pass
+    if len(IDs) > 1:
+        raise ValueError("Ancestral sequence file must have only 1 sequence")
+    elif len(IDs) == 0:
+        IDs.append("Ancestral")
+    print_log("Ancestral Sequence: %s" % anc)
+    tree = read_tree_newick(pm_fn); tree.suppress_unifurcations()
+    treestr = tree.newick()
+    if ',' not in treestr: # if one-node tree, add DUMMY 0-length leaf
+        treestr = "(DUMMY:0,%s);" % treestr.replace('(','').replace(')','')[:-1]
+    phy_fn = "%s/seqgen_tree.phy" % '/'.join(out_fn.split('/')[:-1])
+    phy_file = open(phy_fn, 'w')
+    phy_file.write("1 %d\n%s %s\n1\n%s\n" % (len(anc), IDs[0], anc, treestr))
+    phy_file.close()
+    command = [path_seqgen, '-of', '-k1', '-mGTR', '-r', str(a2c), str(a2g), str(a2t), str(c2g), str(c2t), str(g2t), '-f', str(f_a), str(f_c), str(f_g), str(f_t), '-of', phy_fn]
+    print_log("Seq-Gen Command: %s" % ' '.join(command))
+    out_file = open(out_fn, 'w')
+    seqgen_log_file = open("%s/%s" % ('/'.join(out_fn.split('/')[:-1]), SEQGEN_LOG_FN), 'w')
+    if call(command, stdout=out_file, stderr=seqgen_log_file) != 0:
+        raise RuntimeError("Error when running: %s" % path_seqgen)
+    seqgen_log_file.close(); out_file.close()
+    print_log("Sequence simulation complete: %s" % out_fn)
 
 # main execution
 if __name__ == "__main__":
@@ -356,12 +403,18 @@ if __name__ == "__main__":
     print_log()
 
     # simulate sequences
-    # TODO
+    seq_fn = "%s/sequences.fas" % args.output
+    print_log("===== SEQUENCES =====")
+    simulate_sequences_gtr(
+        args.seq_a2c, args.seq_a2g, args.seq_a2t, args.seq_c2g, args.seq_c2t, args.seq_g2t,
+        args.seq_f_a, args.seq_f_c, args.seq_f_g, args.seq_f_t,
+        args.seq_anc, pm_fn, seq_fn, args.path_seqgen)
+    print_log()
 
     # gzip output files (if requested)
     if args.gzip_output:
         print_log("===== GZIP OUTPUT FILES =====")
-        fns_to_compress = [cn_fn, tn_fn, pt_fn, pm_fn] + list(glob('%s/*' % tn_gemf_tmp_dir))
+        fns_to_compress = [cn_fn, tn_fn, st_fn, pt_fn, pm_fn, seq_fn] + list(glob('%s/*' % tn_gemf_tmp_dir)) + list(glob('%s/seqgen*' % args.output))
         for fn in fns_to_compress:
             command = ['gzip', '-9', fn]
             if call(command) != 0:
