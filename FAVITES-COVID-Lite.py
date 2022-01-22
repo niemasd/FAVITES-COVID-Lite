@@ -18,19 +18,15 @@ GEMF_NETWORK_FN = 'network.txt'
 GEMF_STATUS_FN = 'status.txt'
 GEMF_OUTPUT_FN = 'output.txt'
 GEMF_LOG_FN = 'log.txt'
-SEQGEN_LOG_FN = 'seqgen_log.txt'
+# SEQGEN_LOG_FN = 'seqgen_log.txt'
 SAAPPHIIRE_PARAMS = [
     # transition rates
-    's_to_e_seed', 'e_to_p1', 'p1_to_p2', 'p2_to_i1', 'p2_to_a1', 'i1_to_i2', 'i1_to_h', 'i2_to_h', 'i2_to_r',
+    's_to_e_seed', 'e_to_p1', 'p1_to_p2', 'p2_to_i1', 'p2_to_a1', 'i1_to_i2', 'i1_to_h', 'i1_to_r', 'i2_to_h', 'i2_to_r',
     'a1_to_a2', 'a2_to_r', 'h_to_r', 's_to_e_by_e', 's_to_e_by_p1', 's_to_e_by_p2', 's_to_e_by_i1', 's_to_e_by_i2',
     's_to_e_by_a1', 's_to_e_by_a2',
 
     # initial state frequencies
     'freq_s', 'freq_e', 'freq_p1', 'freq_p2', 'freq_i1', 'freq_i2', 'freq_a1', 'freq_a2', 'freq_h', 'freq_r',
-]
-GTR_PARAMS = [
-    'a2c', 'a2g', 'a2t', 'c2g', 'c2t', 'g2t',
-    'f_a', 'f_c', 'f_g', 'f_t',
 ]
 
 # check if user is just printing version
@@ -81,9 +77,6 @@ def parse_args():
     parser.add_argument('--tn_end_time', required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter: End Time")
     parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny (Time): Coalescent Intra-host Effective Population Size")
     parser.add_argument('--pm_mut_rate', required=True, type=float, help="Phylogeny (Mutations): Mutation Rate")
-    for seq_param in GTR_PARAMS:
-        parser.add_argument('--seq_%s' % seq_param, required=True, type=float, help="Sequences: GTR Parameter '%s'" % seq_param)
-    parser.add_argument('--seq_anc', required=True, type=str, help="Sequences: Ancestral Sequence")
     parser.add_argument('--path_ngg_barabasi_albert', required=False, type=str, default='ngg_barabasi_albert', help="Path to 'ngg_barabasi_albert' executable")
     parser.add_argument('--path_gemf', required=False, type=str, default='GEMF', help="Path to 'GEMF' executable")
     parser.add_argument('--path_coatran_constant', required=False, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
@@ -108,7 +101,7 @@ def simulate_contact_network_ba(n, m, out_fn, path_ngg_barabasi_albert):
 # simulate transmission network under SAAPPHIIRE model
 def simulate_transmission_network_saapphiire(
         # transition rates
-        s_to_e_seed, e_to_p1, p1_to_p2, p2_to_i1, p2_to_a1, i1_to_i2, i1_to_h, i2_to_h, i2_to_r,
+        s_to_e_seed, e_to_p1, p1_to_p2, p2_to_i1, p2_to_a1, i1_to_i2, i1_to_h, i1_to_r, i2_to_h, i2_to_r,
         a1_to_a2, a2_to_r, h_to_r, s_to_e_by_e, s_to_e_by_p1, s_to_e_by_p2, s_to_e_by_i1, s_to_e_by_i2,
         s_to_e_by_a1, s_to_e_by_a2,
 
@@ -128,7 +121,7 @@ def simulate_transmission_network_saapphiire(
     makedirs(gemf_tmp_dir, exist_ok=True)
 
     # initialize GEMF stuff
-    global gemf_state_to_num; gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
+    gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
     global gemf_num_to_state; gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
     freq_sum = 0
     for state in gemf_state_to_num.keys():
@@ -148,7 +141,7 @@ def simulate_transmission_network_saapphiire(
     para_file.write("0\t0\t" + str(e_to_p1) + "\t0\t0\t0\t0\t0\t0\t0\n")
     para_file.write("0\t0\t0\t" + str(p1_to_p2) + "\t0\t0\t0\t0\t0\t0\n")
     para_file.write("0\t0\t0\t0\t" + str(p2_to_i1) + "\t0\t" + str(p2_to_a1) + "\t0\t0\t0\n")
-    para_file.write("0\t0\t0\t0\t0\t" + str(i1_to_i2) + "\t0\t0\t" + str(i1_to_h) + "\t0\n")
+    para_file.write("0\t0\t0\t0\t0\t" + str(i1_to_i2) + "\t0\t0\t" + str(i1_to_h) + "\t" + str(i1_to_r) + "\n")
     para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t" + str(i2_to_h) + "\t" + str(i2_to_r) + "\n")
     para_file.write("0\t0\t0\t0\t0\t0\t0\t" + str(a1_to_a2) + "\t0\t0\n")
     para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t0\t" + str(a2_to_r) + "\n")
@@ -163,7 +156,7 @@ def simulate_transmission_network_saapphiire(
     para_file.write("0\t" + str(s_to_e_by_a1) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
     para_file.write("0\t" + str(s_to_e_by_a2) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
     para_file.write("[STATUS_BEGIN]\n0\n\n")
-    global infectious; infectious = ['E', 'P1','P2','I1','I2','A1','A2']
+    infectious = ['E', 'P1','P2','I1','I2','A1','A2']
     para_file.write("[INDUCER_LIST]\n" + ' '.join([str(gemf_state_to_num[i]) for i in infectious]) + "\n\n")
     para_file.write("[SIM_ROUNDS]\n1\n\n")
     para_file.write("[INTERVAL_NUM]\n1\n\n")
@@ -256,35 +249,14 @@ def simulate_transmission_network_saapphiire(
     print_log("Transmission Network simulation complete: %s" % out_fn)
 
 # sample people the first time they're ascertained
-def sample_first_ascertained(end_time, gemf_output_fn, out_fn):
+def sample_first_ascertained(gemf_output_fn, out_fn):
     print_log("Sample Time Model: Fist Time Ascertained")
-
-    # parse ascertained and removed times
-    global ascertained; ascertained= set()
-    inf_time = dict(); sample_time = dict(); removed_time = dict()
+    sample_time = dict()
     for line in open(gemf_output_fn):
         t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
-        v = int(v); post = int(post); t = float(t)
-        post_state = gemf_num_to_state[post]
-        if post_state in infectious and v not in inf_time: # infected
-            inf_time[v] = t
-        if post_state in {'I1','I2'} and v not in sample_time: # ascertained
-            sample_time[v] = t
-            ascertained.add(v)
-        if post_state == 'R' and v not in removed_time: # removed
-            removed_time[v] = t
-
-    # for people who weren't ever removed, make their "removed time" be the end time
-    for node in inf_time:
-        if node in sample_time:
-            continue
-        if node in removed_time:
-            r = removed_time[node]
-        else:
-            r = end_time
-        sample_time[node] = uniform(inf_time[node], r)
-
-    # output sample times
+        v = int(v); post = int(post)
+        if v not in sample_time and gemf_num_to_state[post] in {'I1','I2'}:
+            sample_time[v] = float(t)
     out_file = open(out_fn, 'w')
     for node in sample_time:
         out_file.write("%d\t%s\n" % (node, sample_time[node]))
@@ -317,48 +289,6 @@ def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
             node.label = None
     time_tree.write_tree_newick(out_fn)
     print_log("Mutation rate scaling complete: %s" % out_fn)
-
-# simulate sequences under GTR model
-def simulate_sequences_gtr(a2c, a2g, a2t, c2g, c2t, g2t, f_a, f_c, f_g, f_t, anc, pm_fn, out_fn, path_seqgen):
-    print_log("Substitution Model: GTR")
-    for param in GTR_PARAMS:
-        print_log("Substitution Parameter '%s': %s" % (param, locals()[param]))
-    IDs = list()
-    try:
-        lines = [l.strip() for l in open(anc).read().strip().splitlines()]
-        anc = ''
-        for l in lines:
-            if l.startswith('>'):
-                IDs.append(l[1:])
-            else:
-                anc += l
-    except:
-        pass
-    if len(IDs) > 1:
-        raise ValueError("Ancestral sequence file must have only 1 sequence")
-    elif len(IDs) == 0:
-        IDs.append("Ancestral")
-    print_log("Ancestral Sequence: %s" % anc)
-    tree = read_tree_newick(pm_fn); tree.suppress_unifurcations()
-    treestr = tree.newick()
-    if ',' not in treestr: # if one-node tree, add DUMMY 0-length leaf
-        treestr = "(DUMMY:0,%s);" % treestr.replace('(','').replace(')','')[:-1]
-    phy_fn = "%s/seqgen_tree.phy" % '/'.join(out_fn.split('/')[:-1])
-    phy_file = open(phy_fn, 'w')
-    phy_file.write("1 %d\n%s %s\n1\n%s\n" % (len(anc), IDs[0], anc, treestr))
-    phy_file.close()
-    command = [path_seqgen, '-of', '-k1', '-mGTR', '-r', str(a2c), str(a2g), str(a2t), str(c2g), str(c2t), str(g2t), '-f', str(f_a), str(f_c), str(f_g), str(f_t), '-of', phy_fn]
-    print_log("Seq-Gen Command: %s" % ' '.join(command))
-    out_file = open(out_fn, 'w')
-    seqgen_log_fn = "%s/%s" % ('/'.join(out_fn.split('/')[:-1]), SEQGEN_LOG_FN)
-    seqgen_log_file = open(seqgen_log_fn, 'w')
-    call(command, stdout=out_file, stderr=seqgen_log_file)
-    seqgen_log_file.close(); out_file.close()
-    # have to manually check for errors (Seq-Gen exits with status 0)
-    for l in open(seqgen_log_fn):
-        if l.startswith("Error") or 'Bad state in ancestoral sequence' in l:
-            raise RuntimeError("Error when running: %s" % path_seqgen)
-    print_log("Sequence simulation complete: %s" % out_fn)
 
 # main execution
 if __name__ == "__main__":
@@ -395,7 +325,7 @@ if __name__ == "__main__":
     print_log("===== TRANSMISSION NETWORK =====")
     simulate_transmission_network_saapphiire(
         # transition rates
-        args.tn_s_to_e_seed, args.tn_e_to_p1, args.tn_p1_to_p2, args.tn_p2_to_i1, args.tn_p2_to_a1, args.tn_i1_to_i2, args.tn_i1_to_h, args.tn_i2_to_h, args.tn_i2_to_r,
+        args.tn_s_to_e_seed, args.tn_e_to_p1, args.tn_p1_to_p2, args.tn_p2_to_i1, args.tn_p2_to_a1, args.tn_i1_to_i2, args.tn_i1_to_h, args.tn_i1_to_r, args.tn_i2_to_h, args.tn_i2_to_r,
         args.tn_a1_to_a2, args.tn_a2_to_r, args.tn_h_to_r, args.tn_s_to_e_by_e, args.tn_s_to_e_by_p1, args.tn_s_to_e_by_p2, args.tn_s_to_e_by_i1, args.tn_s_to_e_by_i2,
         args.tn_s_to_e_by_a1, args.tn_s_to_e_by_a2,
 
@@ -412,7 +342,7 @@ if __name__ == "__main__":
     # determine sample times
     st_fn = "%s/sample_times.txt" % args.output
     print_log("===== SAMPLE TIMES =====")
-    sample_first_ascertained(args.tn_end_time, "%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
+    sample_first_ascertained("%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
     print_log()
     
     # simulate phylogeny (unit of time)
@@ -427,19 +357,10 @@ if __name__ == "__main__":
     scale_tree_mutation_rate_constant(args.pm_mut_rate, pt_fn, pm_fn)
     print_log()
 
-    # simulate sequences
-    seq_fn = "%s/sequences.fas" % args.output
-    print_log("===== SEQUENCES =====")
-    simulate_sequences_gtr(
-        args.seq_a2c, args.seq_a2g, args.seq_a2t, args.seq_c2g, args.seq_c2t, args.seq_g2t,
-        args.seq_f_a, args.seq_f_c, args.seq_f_g, args.seq_f_t,
-        args.seq_anc, pm_fn, seq_fn, args.path_seqgen)
-    print_log()
-
     # gzip output files (if requested)
     if args.gzip_output:
         print_log("===== GZIP OUTPUT FILES =====")
-        fns_to_compress = [cn_fn, tn_fn, st_fn, pt_fn, pm_fn, seq_fn] + list(glob('%s/*' % tn_gemf_tmp_dir)) + list(glob('%s/seqgen*' % args.output))
+        fns_to_compress = [cn_fn, tn_fn, st_fn, pt_fn, pm_fn] + list(glob('%s/*' % tn_gemf_tmp_dir))
         for fn in fns_to_compress:
             command = ['gzip', '-9', fn]
             if call(command) != 0:
