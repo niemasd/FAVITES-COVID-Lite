@@ -1,45 +1,24 @@
 #!/usr/bin/env python3
 from datetime import datetime
 from glob import glob
-from os import chdir, getcwd, makedirs
+from os import chdir, getcwd, makedirs, listdir
 from os.path import isdir, isfile
 from random import sample, uniform
 from subprocess import call
 from sys import argv, stdout
 from treeswift import read_tree_newick
 import argparse
+from gzip import open as gopen 
 
-# useful constants
-VERSION = '0.0.1'
-LOGFILE = None
-C_INT_MAX = 2147483647
-GEMF_PARA_FN = 'para.txt'
-GEMF_NETWORK_FN = 'network.txt'
-GEMF_STATUS_FN = 'status.txt'
-GEMF_OUTPUT_FN = 'output.txt'
-GEMF_LOG_FN = 'log.txt'
-SEQGEN_LOG_FN = 'seqgen_log.txt'
-SAAPPHIIRE_PARAMS = [
-    # transition rates
-    's_to_e_seed', 'e_to_p1', 'p1_to_p2', 'p2_to_i1', 'p2_to_a1', 'i1_to_i2', 'i1_to_h', 'i2_to_h', 'i2_to_r',
-    'a1_to_a2', 'a2_to_r', 'h_to_r', 's_to_e_by_e', 's_to_e_by_p1', 's_to_e_by_p2', 's_to_e_by_i1', 's_to_e_by_i2',
-    's_to_e_by_a1', 's_to_e_by_a2',
-
-    # initial state frequencies
-    'freq_s', 'freq_e', 'freq_p1', 'freq_p2', 'freq_i1', 'freq_i2', 'freq_a1', 'freq_a2', 'freq_h', 'freq_r',
-]
-GTR_PARAMS = [
-    'a2c', 'a2g', 'a2t', 'c2g', 'c2t', 'g2t',
-    'f_a', 'f_c', 'f_g', 'f_t',
-]
-
-# check if user is just printing version
-if '--version' in argv:
-    print("FAVITES-COVID-Lite version %s" % VERSION); exit()
+# command: ../../../scripts/FAVITES-COVID-Lite_followup.py -i . -e 0.16438 --pt_eff_pop_size 1 --pm_mut_rate 0.0008 --path_coatran_constant /usr/local/bin/coatran_constant --gzip_output
+# command: /path/to/FAVITES-COVID-Lite_followup.py -i /path/to/inputDir -e 0.16438 --pt_eff_pop_size 1 --pm_mut_rate GET_FROM_NEW_RESULTS --path_coatran_constant /path/to/coatran_constant --gzip_output
+# need to write a function to subsample ascertained individuals...maybe 
+# parallel --jobs 8 ~/scripts/FAVITES-COVID-Lite_followup.py -i {} -e 0.191781 --pt_eff_pop_size 1 --pm_mut_rate 0.00092005 --path_coatran_constant coatran_constant --gzip_output ::: $(seq -w 1098 1100)
 
 # return the current time as a string
 def get_time():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 # print to the log (None implies stdout only)
 def print_log(s='', end='\n'):
@@ -48,260 +27,283 @@ def print_log(s='', end='\n'):
     if LOGFILE is not None:
         print(tmp, file=LOGFILE, end=end); LOGFILE.flush()
 
-# Let L = L0, L1, L2, ... be rates, and let X = X0, X1, X2, ... be exponential random variables where Xi has rate Li. Return the probability that Xi is the minimum of X
-def prob_exp_min(i, L):
-    assert i >= 0 and i < len(L), "Invalid index i. Must be 0 <= i < |L|"
-    return L[i]/sum(L)
 
-# roll a weighted die (keys = faces, values = probabilities)
-def roll(orig_die):
-    assert len(orig_die) != 0, "Empty weighted die"
-    total = float(sum(orig_die.values()))
-    die = {face:orig_die[face]/total for face in orig_die}
-    faces = sorted(die.keys())
-    probs = [die[key] for key in faces]
-    cdf = [probs[0]]
-    while len(cdf) < len(probs):
-        cdf.append(cdf[-1] + probs[len(cdf)])
-    num = uniform(0, 1)
-    index = 0
-    while cdf[index] < num:
-        index += 1
-    return faces[index]
+def subsample_tn(tn_path, out_fn, num_sample=50000):
+    if tn_path.lower().endswith('.gz'):
+        tn = gopen(tn_path)
+    else:
+        tn = open(tn_path)
 
-# parse user args
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-o', '--output', required=True, type=str, help="Output Directory")
-    parser.add_argument('--cn_n', required=True, type=int, help="Contact Network: BA Parameter 'n' (number of nodes)")
-    parser.add_argument('--cn_m', required=True, type=int, help="Contact Network: BA Parameter 'm' (number of edges from new node)")
-    for tn_param in SAAPPHIIRE_PARAMS:
-        parser.add_argument('--tn_%s' % tn_param, required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter '%s'" % tn_param)
-    parser.add_argument('--tn_num_seeds', required=True, type=int, help="Transmission Network: SAAPPHIIRE Parameter: Number of Seeds")
-    parser.add_argument('--tn_end_time', required=True, type=float, help="Transmission Network: SAAPPHIIRE Parameter: End Time")
-    parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny (Time): Coalescent Intra-host Effective Population Size")
-    parser.add_argument('--pm_mut_rate', required=True, type=float, help="Phylogeny (Mutations): Mutation Rate")
-    for seq_param in GTR_PARAMS:
-        parser.add_argument('--seq_%s' % seq_param, required=True, type=float, help="Sequences: GTR Parameter '%s'" % seq_param)
-    parser.add_argument('--seq_anc', required=True, type=str, help="Sequences: Ancestral Sequence")
-    parser.add_argument('--path_ngg_barabasi_albert', required=False, type=str, default='ngg_barabasi_albert', help="Path to 'ngg_barabasi_albert' executable")
-    parser.add_argument('--path_gemf', required=False, type=str, default='GEMF', help="Path to 'GEMF' executable")
-    parser.add_argument('--path_coatran_constant', required=False, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
-    parser.add_argument('--path_seqgen', required=False, type=str, default='seq-gen', help="Path to 'seq-gen' executable")
-    parser.add_argument('--gzip_output', action='store_true', help="Gzip Compress Output Files")
-    parser.add_argument('--version', action='store_true', help="Display Version")
-    return parser.parse_args()
-
-# simulate contact network under BA model
-def simulate_contact_network_ba(n, m, out_fn, path_ngg_barabasi_albert):
-    print_log("Contact Network Model: Barabasi-Albert (BA)")
-    for param in ['n', 'm']:
-        print_log("BA Parameter '%s': %d" % (param, locals()[param]))
-    command = [path_ngg_barabasi_albert, str(n), str(m)]
-    print_log("NiemaGraphGen Command: %s" % ' '.join(command))
+    count = 0
     out_file = open(out_fn, 'w')
-    if call(command, stdout=out_file) != 0:
-        raise RuntimeError("Error when running: %s" % path_ngg_barabasi_albert)
-    out_file.close()
-    print_log("Contact Network simulation complete: %s" % out_fn)
-
-# simulate transmission network under SAAPPHIIRE model
-def simulate_transmission_network_saapphiire(
-        # transition rates
-        s_to_e_seed, e_to_p1, p1_to_p2, p2_to_i1, p2_to_a1, i1_to_i2, i1_to_h, i2_to_h, i2_to_r,
-        a1_to_a2, a2_to_r, h_to_r, s_to_e_by_e, s_to_e_by_p1, s_to_e_by_p2, s_to_e_by_i1, s_to_e_by_i2,
-        s_to_e_by_a1, s_to_e_by_a2,
-
-        # initial state frequencies
-        freq_s, freq_e, freq_p1, freq_p2, freq_i1, freq_i2, freq_a1, freq_a2, freq_h, freq_r,
-
-        # other simulation parameters
-        num_seeds, end_time,
-
-        # paths
-        cn_fn, gemf_tmp_dir, out_fn, path_gemf):
-
-    # print initial log info
-    print_log("Transmission Network Model: SAAPPHIIRE")
-    for param in SAAPPHIIRE_PARAMS:
-        print_log("SAAPPHIIRE Parameter '%s': %s" % (param, locals()[param]))
-    makedirs(gemf_tmp_dir, exist_ok=True)
-
-    # initialize GEMF stuff
-    global gemf_state_to_num; gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
-    global gemf_num_to_state; gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
-    freq_sum = 0
-    for state in gemf_state_to_num.keys():
-        param = "freq_%s" % state.lower()
-        freq = locals()[param]
-        if freq < 0:
-            raise ValueError("'%s' must be at least 0" % param)
-        freq_sum += freq
-    if abs(freq_sum - 1) > 0.000001:
-        raise ValueError("Sum of SAAPPHIIRE state frequencies must equal 1")
-
-    # create GEMF para.txt file: https://github.com/niemasd/FAVITES/blob/master/modules/TransmissionTimeSample_SAAPPHIIREGEMF.py#L68-L102
-    para_fn = "%s/%s" % (gemf_tmp_dir, GEMF_PARA_FN)
-    para_file = open(para_fn, 'w')
-    para_file.write("[NODAL_TRAN_MATRIX]\n")
-    para_file.write("0\t" + str(s_to_e_seed) + "\t0\t0\t0\t0\t0\t0\t0\t0\n")
-    para_file.write("0\t0\t" + str(e_to_p1) + "\t0\t0\t0\t0\t0\t0\t0\n")
-    para_file.write("0\t0\t0\t" + str(p1_to_p2) + "\t0\t0\t0\t0\t0\t0\n")
-    para_file.write("0\t0\t0\t0\t" + str(p2_to_i1) + "\t0\t" + str(p2_to_a1) + "\t0\t0\t0\n")
-    para_file.write("0\t0\t0\t0\t0\t" + str(i1_to_i2) + "\t0\t0\t" + str(i1_to_h) + "\t0\n")
-    para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t" + str(i2_to_h) + "\t" + str(i2_to_r) + "\n")
-    para_file.write("0\t0\t0\t0\t0\t0\t0\t" + str(a1_to_a2) + "\t0\t0\n")
-    para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t0\t" + str(a2_to_r) + "\n")
-    para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t0\t" + str(h_to_r) + "\n")
-    para_file.write("0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n")
-    para_file.write("\n[EDGED_TRAN_MATRIX]\n")
-    para_file.write("0\t" + str(s_to_e_by_e)  + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_p1) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_p2) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_i1) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_i2) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_a1) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("0\t" + str(s_to_e_by_a2) + "\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n\n")
-    para_file.write("[STATUS_BEGIN]\n0\n\n")
-    global infectious; infectious = ['E', 'P1','P2','I1','I2','A1','A2']
-    para_file.write("[INDUCER_LIST]\n" + ' '.join([str(gemf_state_to_num[i]) for i in infectious]) + "\n\n")
-    para_file.write("[SIM_ROUNDS]\n1\n\n")
-    para_file.write("[INTERVAL_NUM]\n1\n\n")
-    para_file.write("[MAX_TIME]\n" + str(end_time) + "\n\n")
-    para_file.write("[MAX_EVENTS]\n" + str(C_INT_MAX) + "\n\n")
-    para_file.write("[DIRECTED]\n0\n\n")
-    para_file.write("[SHOW_INDUCER]\n1\n\n")
-    para_file.write("[DATA_FILE]\n" + '\n'.join([GEMF_NETWORK_FN]*len(infectious)) + "\n\n")
-    para_file.write("[STATUS_FILE]\n%s\n\n" % GEMF_STATUS_FN)
-    para_file.write("[OUT_FILE]\n%s" % GEMF_OUTPUT_FN)
-    para_file.close()
-    print_log("Wrote GEMF '%s' file: %s" % (GEMF_PARA_FN, para_fn))
-
-    # write GEMF network file
-    network_fn = "%s/%s" % (gemf_tmp_dir, GEMF_NETWORK_FN)
-    network_file = open(network_fn, 'w')
-    max_node_label = -1
-    for l in open(cn_fn):
-        if l.startswith("EDGE"):
-            parts = l.split('\t'); u = int(parts[1]); v = int(parts[2])
-            network_file.write("%d\t%d\n" % (u,v))
-            if u > max_node_label:
-                max_node_label = u
-            if v > max_node_label:
-                max_node_label = v
-    network_file.close()
-    print_log("Wrote GEMF '%s' file: %s" % (GEMF_NETWORK_FN, network_fn))
-
-    # write GEMF status file
-    out_file = open(out_fn, 'w')
-    status_fn = "%s/%s" % (gemf_tmp_dir, GEMF_STATUS_FN)
-    status_file = open(status_fn, 'w')
-    seeds = set(sample(range(max_node_label+1), k=num_seeds))
-    gemf_state = list()
-    for node in range(max_node_label+1):
-        if node in seeds:
-            status_file.write("%d\n" % gemf_state_to_num['P1'])
-            gemf_state.append(gemf_state_to_num['P1'])
-            out_file.write("None\t%d\t0\n" % node)
+    infected_persons = set()
+    for l in tn:
+        if isinstance(l,bytes):
+            u,v,t = l.decode().strip().split('\t')
         else:
-            status_file.write("%d\n" % gemf_state_to_num['S'])
-            gemf_state.append(gemf_state_to_num['S'])
-    status_file.close()
-    print_log("Wrote GEMF '%s' file: %s" % (GEMF_STATUS_FN, status_fn))
+            u,v,t = l.strip().split('\t')
 
-    # run GEMF
-    gemf_log_file = open("%s/%s" % (gemf_tmp_dir, GEMF_LOG_FN), 'w')
-    orig_dir = getcwd()
-    chdir(gemf_tmp_dir)
-    command = [path_gemf]
-    print_log("GEMF Command: %s" % ' '.join(command))
-    if call(command, stdout=gemf_log_file) != 0:
-        raise RuntimeError("Error when running: %s" % path_gemf)
-    gemf_log_file.close()
-    chdir(orig_dir)
-    print_log("Finished running GEMF")
+        if u == 'None':
+            infected_persons.add(v)
+            out_file.write('%s\t%s\t%s\n' % (u,v,t))
+            count += 1
+        elif u != v and count < num_sample:
+            infected_persons.add(v)
+            out_file.write('%s\t%s\t%s\n' % (u,v,t))
+            count += 1
+        elif u == v and u in infected_persons:
+            out_file.write('%s\t%s\t%s\n' % (u,v,t))
 
-    # reload edge-based matrices for ease of use
-    matrices = open("%s/%s" % (gemf_tmp_dir, GEMF_PARA_FN)).read().strip()
-    outside_infection_matrix = [[float(e) for e in l.split()] for l in matrices[matrices.index('[NODAL_TRAN_MATRIX]'):matrices.index('\n\n[EDGED_TRAN_MATRIX]')].replace('[NODAL_TRAN_MATRIX]\n','').splitlines()]
-    matrices = [[[float(e) for e in l.split()] for l in m.splitlines()] for m in matrices[matrices.index('[EDGED_TRAN_MATRIX]'):matrices.index('\n\n[STATUS_BEGIN]')].replace('[EDGED_TRAN_MATRIX]\n','').split('\n\n')]
-    matrices = {gemf_state_to_num[infectious[i]]:matrices[i] for i in range(len(infectious))}
-    matrices[gemf_state_to_num['S']] = outside_infection_matrix
+        # if count >= num_sample:
+        #     break
+    return infected_persons
+    # print(count)
 
-    # convert GEMF output to FAVITES transmission network format
-    for line in open("%s/%s" % (gemf_tmp_dir, GEMF_OUTPUT_FN)):
-        t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
-        v,pre,post = int(v),int(pre),int(post)
-        lists = lists.split('],[')
-        lists[0] += ']'
-        lists[-1] = '[' + lists[-1]
-        for i in range(1,len(lists)-1):
-            if '[' not in lists[i]:
-                lists[i] = '[' + lists[i] + ']'
-        lists = [eval(l) for l in lists]
-        us = []
-        for l in lists:
-            us.extend(l)
-        if post == gemf_state_to_num['R']:
-            out_file.write("%s\t%s\t%s\n" % (v,v,t))
-        elif gemf_num_to_state[pre] == 'S' and gemf_num_to_state[post] == 'E':
-            uRates = [matrices[gemf_state[u]][pre][post] for u in us]
-            die = {us[i]:prob_exp_min(i, uRates) for i in range(len(us))}
-            if len(die) != 0:
-                u = roll(die) # roll die weighted by exponential infectious rates
-            elif len(die) == 0 or u == v: # new seed
-                u = "None"
-            out_file.write("%s\t%s\t%s\n" % (u,v,t))
-        gemf_state[v] = post
-    print_log("Transmission Network simulation complete: %s" % out_fn)
+# sample people the first time they're ascertained, up to 50k people
+def sample_first_50k(gemf_path, out_fn, end_time, method, tn_infected_persons):
+    print_log("Sample Time Model: First 50k")
+    gemf_state_to_num = {'S':0, 'E':1, 'P1':2, 'P2':3, 'I1':4, 'I2':5, 'A1':6, 'A2':7, 'H':8, 'R':9}
+    gemf_num_to_state = {gemf_state_to_num[state]:state for state in gemf_state_to_num}
+    if end_time > 1: # need this to be in years
+        end_time = end_time/365
+    gemf_time = dict()
+    sample_time = dict()
+    if gemf_path.endswith('gz'):
+        gemf_output = gopen(gemf_path)
+    else:
+        gemf_output = open(gemf_path)
 
-# sample people the first time they're ascertained
-def sample_first_ascertained(end_time, gemf_output_fn, out_fn):
-    print_log("Sample Time Model: Fist Time Ascertained")
 
-    # parse ascertained and removed times
-    global ascertained; ascertained= set()
-    inf_time = dict(); sample_time = dict(); removed_time = dict()
-    for line in open(gemf_output_fn):
-        t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
-        v = int(v); post = int(post); t = float(t)
-        post_state = gemf_num_to_state[post]
-        if post_state in infectious and v not in inf_time: # infected
-            inf_time[v] = t
-        if post_state in {'I1','I2'} and v not in sample_time: # ascertained
-            sample_time[v] = t
-            ascertained.add(v)
-        if post_state == 'R' and v not in removed_time: # removed
-            removed_time[v] = t
-
-    # for people who weren't ever removed, make their "removed time" be the end time
-    for node in inf_time:
-        if node in sample_time:
+    for index, line in enumerate(gemf_output):
+        if gemf_path.endswith('gz'):
+            t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.decode().split()]
+        else:
+            t,rate,v,pre,post,num0,num1,num2,num3,num4,num5,num6,num7,num8,num9,lists = [i.strip() for i in line.split()]
+        
+        if v not in tn_infected_persons: # only care about first X number of infections, based on the subsampled transmission network
             continue
-        if node in removed_time:
-            r = removed_time[node]
-        else:
-            r = end_time
-        sample_time[node] = uniform(inf_time[node], r)
 
-    # output sample times
+        v = int(v); post = int(post)
+
+        if index == 0: # keep track of this; have to include
+            index_case = v
+        if v not in gemf_time:
+            gemf_time[v] = {gemf_num_to_state[post]: float(t)}
+        else:
+            gemf_time[v][gemf_num_to_state[post]] = float(t)
+
+    if method == 1: # sample between case status and end, or presymptomatic and end if no case status, or exposed and end if not yet presymptomatic
+        for node in gemf_time:
+            if 'I1' in gemf_time[node] or 'I2' in gemf_time[node]:
+                if 'R' in gemf_time[node]:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['I1'], gemf_time[node]['R'])
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['I2'], gemf_time[node]['R'])
+                else:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['I1'], end_time)
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['I2'], end_time)
+
+            elif 'A1' in gemf_time[node] or 'A2' in gemf_time[node]:
+                if 'R' in gemf_time[node]:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['A1'], gemf_time[node]['R'])
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['A2'], gemf_time[node]['R'])
+                else:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['A1'], end_time)
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['A2'], end_time)
+
+            elif 'P1' in gemf_time[node] or 'P2' in gemf_time[node]:
+                if 'R' in gemf_time[node]:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['P1'], gemf_time[node]['R'])
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['P2'], gemf_time[node]['R'])
+                else:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['P1'], end_time)
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['P2'], end_time)
+            else:
+                sample_time[node] = uniform(gemf_time[node]['E'], end_time)
+
+
+    elif method == 2: # sample index case and then all ascertained cases, with ascertained sampled between case status and end
+        for node in gemf_time:
+            # print(node, gemf_time[node])
+            if node == index_case: # either sample directly at hosp, or between case status and end
+                if 'H' in gemf_time[node]:
+                    sample_time[node] = gemf_time[node]['H']
+                    continue
+
+                if 'R' in gemf_time[node]:
+                    end = gemf_time[node]['R']
+                else:
+                    end = end_time
+                
+                if 'I2' in gemf_time[node]:
+                    start = gemf_time[node]['I2']
+                elif 'I1' in gemf_time[node]:
+                    start = gemf_time[node]['I1']
+                elif 'A2' in gemf_time[node]:
+                    start = gemf_time[node]['A2']
+                elif 'A1' in gemf_time[node]:
+                    start = gemf_time[node]['A1']
+                elif 'P2' in gemf_time[node]:
+                    start = gemf_time[node]['P2']
+                elif 'P1' in gemf_time[node]:
+                    start = gemf_time[node]['P1']
+                else:
+                    start = gemf_time[node]['E']
+                sample_time[node] = uniform(start, end)
+
+            elif 'I1' in gemf_time[node] or 'I2' in gemf_time[node]:
+                if 'R' in gemf_time[node]:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['I1'], gemf_time[node]['R'])
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['I2'], gemf_time[node]['R'])
+                else:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['I1'], end_time)
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['I2'], end_time)
+
+
+    elif method == 3: # sample ascertained and unascertained, ascertained at ascertainment, unascertained between presymtomatic and end 
+        for node in gemf_time:
+            # print(gemf_time[node])
+            if 'I1' in gemf_time[node] or 'I2' in gemf_time[node]:
+                try:
+                    sample_time[node] = gemf_time[node]['I1']
+                except:
+                    sample_time[node] = gemf_time[node]['I2']
+            elif 'P1' in gemf_time[node] or 'P2' in gemf_time[node]:
+                if 'R' in gemf_time[node]:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['P1'], gemf_time[node]['R'])
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['P2'], gemf_time[node]['R'])
+                else:
+                    try:
+                        sample_time[node] = uniform(gemf_time[node]['P1'], end_time)
+                    except:
+                        sample_time[node] = uniform(gemf_time[node]['P2'], end_time)
+            else:
+                sample_time[node] = uniform(gemf_time[node]['E'], end_time)
+
+    elif method == 4:
+        '''
+        Sample index case, but besides the index case, 
+        only sample after we hit the first hospitalized individual. Then, 
+        we sample between ascertained and recovery
+        '''
+        first_hosp = False
+        first_hosp_node = None
+        first_hosp_time = 999999
+        for node in gemf_time:
+            if 'H' in gemf_time[node]:
+                hosp_time = gemf_time[node]['H']
+                # print(gemf_time[node]['H'] - gemf_time[node]['I1'])
+                if hosp_time < first_hosp_time:
+                    first_hosp_node = node
+                    first_hosp_time = hosp_time
+                    print(first_hosp_time)
+
+        for node in gemf_time:
+            # print(node, gemf_time[node])
+            if node == index_case: # either sample directly at hosp, or between case status and end
+                if 'I1' in gemf_time[node]:
+                    start = gemf_time[node]['I1']
+                elif 'A1' in gemf_time[node]:
+                    start = gemf_time[node]['A1']
+                elif 'P1' in gemf_time[node]:
+                    start = gemf_time[node]['P1']
+                else:
+                    start = gemf_time[node]['E']
+
+                if 'R' in gemf_time[node]:
+                    end = gemf_time[node]['R']
+                else:
+                    end = end_time
+            
+                # if end_time > first_hosp_time and start < first_hosp_time: # if sampling, can't sample before the earliest hosp.
+                #     start = first_hosp_time
+
+                sample_time[node] = {'sample_time' : uniform(start, end), 'hosp' : False}
+                if 'H' in gemf_time[node]:
+                    if sample_time[node]['sample_time'] >= gemf_time[node]['H']:
+                        sample_time[node]['hosp'] = True
+
+            elif 'I1' in gemf_time[node] or 'I2' in gemf_time[node]:
+                start = gemf_time[node]['I1']
+                if 'R' in gemf_time[node]: # specify end of sampling time window
+                    end = gemf_time[node]['R']
+                else:
+                    end = end_time
+
+                if 'H' in gemf_time and start < first_hosp_time: # all hospitalized individuals sampled, so make sure that they're not accidentally sampled before the first hospitalization time 
+                    start = first_hosp_time
+
+                sample_time[node] = {'sample_time' : uniform(start, end), 'hosp' : False}
+                if 'H' in gemf_time[node]: # is this a hospital sample? 
+                    if sample_time[node]['sample_time'] >= gemf_time[node]['H']:
+                        sample_time[node]['hosp'] = True
+
+
+
     out_file = open(out_fn, 'w')
-    for node in sample_time:
-        out_file.write("%d\t%s\n" % (node, sample_time[node]))
+    # count = 0
+    print(len(sample_time))
+    if method < 4:
+        for node in sample_time:
+            out_file.write("%d\t%s\n" % (node, sample_time[node]))
+            # count += 1
+            # if count == 50000:
+            #     break
+    else:
+        '''
+        1. sort sample_time by sample_time
+        2. Start iterating through the dictionary
+        3. Write the sample time of the index case
+        4. Write the sample time of the first hospitalized case and then 
+           keep writing sample times until we have written 50k sample times 
+           (or reached the end of the samples)
+        '''
+        sample_time_sorted = dict(sorted(sample_time.items(), key=lambda item: item[1]['sample_time']))
+        out_file.write("%d\t%s\n" % (index_case, sample_time[index_case]['sample_time']))
+        # count = 1
+        # print(first_hosp_time)
+        for node in sample_time_sorted:
+            if node == index_case or sample_time_sorted[node]['sample_time'] < first_hosp_time:
+                continue
+            out_file.write("%d\t%s\n" % (node, sample_time_sorted[node]['sample_time']))
+            # count += 1
+            # if count == 1000:
+            #     break
+
+
     out_file.close()
     print_log("Sample time selection complete: %s" % out_fn)
 
+
 # simulate phylogeny (unit of time) under coalescent with constant intra-host effective population size
-def simulate_phylogeny_coalescent_constant(eff_pop_size, tn_fn, st_fn, out_fn, path_coatran_constant):
+def simulate_phylogeny_coalescent_constant(eff_pop_size, tn_subsampled_fn, st_fn, out_fn, path_coatran_constant):
     print_log("Phylogenetic Model: Coalescent with Constant Effective Population Size")
     print_log("Coalescent Parameter 'effective population size': %s" % eff_pop_size)
-    command = [path_coatran_constant, tn_fn, st_fn, str(eff_pop_size)]
+    command = [path_coatran_constant, tn_subsampled_fn, st_fn, str(eff_pop_size)]
     print_log("CoaTran Command: %s" % ' '.join(command))
     out_file = open(out_fn, 'w')
     if call(command, stdout=out_file) != 0:
         raise RuntimeError("Error when running: %s" % path_coatran_constant)
     out_file.close()
     print_log("Phylogeny simulation complete: %s" % out_fn)
+
 
 # scale phylogeny (to unit of mutations) using constant mutation rate
 def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
@@ -318,128 +320,82 @@ def scale_tree_mutation_rate_constant(mut_rate, pt_fn, out_fn):
     time_tree.write_tree_newick(out_fn)
     print_log("Mutation rate scaling complete: %s" % out_fn)
 
-# simulate sequences under GTR model
-def simulate_sequences_gtr(a2c, a2g, a2t, c2g, c2t, g2t, f_a, f_c, f_g, f_t, anc, pm_fn, out_fn, path_seqgen):
-    print_log("Substitution Model: GTR")
-    for param in GTR_PARAMS:
-        print_log("Substitution Parameter '%s': %s" % (param, locals()[param]))
-    IDs = list()
-    try:
-        lines = [l.strip() for l in open(anc).read().strip().splitlines()]
-        anc = ''
-        for l in lines:
-            if l.startswith('>'):
-                IDs.append(l[1:])
-            else:
-                anc += l
-    except:
-        pass
-    if len(IDs) > 1:
-        raise ValueError("Ancestral sequence file must have only 1 sequence")
-    elif len(IDs) == 0:
-        IDs.append("Ancestral")
-    print_log("Ancestral Sequence: %s" % anc)
-    tree = read_tree_newick(pm_fn); tree.suppress_unifurcations()
-    treestr = tree.newick()
-    if ',' not in treestr: # if one-node tree, add DUMMY 0-length leaf
-        treestr = "(DUMMY:0,%s);" % treestr.replace('(','').replace(')','')[:-1]
-    phy_fn = "%s/seqgen_tree.phy" % '/'.join(out_fn.split('/')[:-1])
-    phy_file = open(phy_fn, 'w')
-    phy_file.write("1 %d\n%s %s\n1\n%s\n" % (len(anc), IDs[0], anc, treestr))
-    phy_file.close()
-    command = [path_seqgen, '-of', '-k1', '-mGTR', '-r', str(a2c), str(a2g), str(a2t), str(c2g), str(c2t), str(g2t), '-f', str(f_a), str(f_c), str(f_g), str(f_t), '-of', phy_fn]
-    print_log("Seq-Gen Command: %s" % ' '.join(command))
-    out_file = open(out_fn, 'w')
-    seqgen_log_fn = "%s/%s" % ('/'.join(out_fn.split('/')[:-1]), SEQGEN_LOG_FN)
-    seqgen_log_file = open(seqgen_log_fn, 'w')
-    call(command, stdout=out_file, stderr=seqgen_log_file)
-    seqgen_log_file.close(); out_file.close()
-    # have to manually check for errors (Seq-Gen exits with status 0)
-    for l in open(seqgen_log_fn):
-        if l.startswith("Error") or 'Bad state in ancestoral sequence' in l:
-            raise RuntimeError("Error when running: %s" % path_seqgen)
-    print_log("Sequence simulation complete: %s" % out_fn)
+
+# parse user args
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-tn', '--transmission_network', required=True, type=str, help="Transmission network")
+    parser.add_argument('-g', '--gemf', required=True, type=str, help="GEMF output file")
+    parser.add_argument('-e', '--end_time', required=True, type=float, help="Simulation end time")
+    parser.add_argument('--pt_eff_pop_size', required=True, type=float, help="Phylogeny (Time): Coalescent Intra-host Effective Population Size")
+    parser.add_argument('--pm_mut_rate', required=True, type=float, help="Phylogeny (Mutations): Mutation Rate")
+    parser.add_argument('--path_coatran_constant', required=True, type=str, default='coatran_constant', help="Path to 'coatran_constant' executable")
+    parser.add_argument('-m', '--method', required=True, type=float, help="Choose {1,2,3,4}: (1) sample all (between A/I and R); (2) sample index (at hosp or between case and R) and I (between I and R); (3) sample all (I at I, A between A and R); ")
+    parser.add_argument('-o', '--output', required=True, type=str, help="Output directory")
+    parser.add_argument('--gzip_output', action='store_true', help="Gzip Compress Output Files")
+    return parser.parse_args()
+
 
 # main execution
 if __name__ == "__main__":
     # parse and check user args
     args = parse_args()
-    if isdir(args.output) or isfile(args.output):
-        raise ValueError("Output directory exists: %s" % args.output)
-    if args.cn_n < args.cn_m:
-        raise ValueError("In the BA model, the number of nodes (%d) must be larger than the number of edges from new nodes (%d)" % (args.cn_n, args.cn_m))
-    if args.tn_num_seeds < 1:
-        raise ValueError("Must have at least 1 seed individual")
+    # if not isdir(args.output) and not isfile(args.output):
+    #     raise ValueError("Input directory does not exist: %s" % args.output)
+
+    # for path in listdir(args.output):
+    #     if 'transmission' in path:
+    #         tn_path = args.output + '/' + path
+    #     elif 'GEMF_files' in path:
+    #         for gemf_path in listdir(args.output + '/' + path):
+    #             if 'output' in gemf_path:
+    #                 gemf_output_path = args.output + '/' + path + '/' + gemf_path
+    tn_path = args.transmission_network
+    gemf_output_path = args.gemf
+    # print(tn_path, gemf_output_path)
 
     # set up output directory
-    makedirs(args.output, exist_ok=True)
-    LOGFILE_fn = "%s/log.txt" % args.output
+    # makedirs(args.output, exist_ok=True)
+    LOGFILE_fn = "%s/log_followup.txt" % args.output
     LOGFILE = open(LOGFILE_fn, 'w')
 
     # print run info to log
     print_log("===== RUN INFORMATION =====")
-    print_log("FAVITES-COVID-Lite Version: %s" % VERSION)
-    print_log("FAVITES-COVID-Lite Command: %s" % ' '.join(argv))
     print_log("Output Directory: %s" % args.output)
     print_log()
 
-    # simulate contact network
-    cn_fn = "%s/contact_network.txt" % args.output
-    print_log("===== CONTACT NETWORK =====")
-    simulate_contact_network_ba(args.cn_n, args.cn_m, cn_fn, args.path_ngg_barabasi_albert)
+    # subsample transmission network
+    print_log("===== TRANSMISSION SUBSAMPLING =====")
+    print_log("Output Directory: %s" % args.output)
+    # tn_subsampled_fn = tn_path.split('txt')[0] + 'subsampled.txt'
+    tn_subsampled_fn = '%s/transmission_network.subsampled.txt' % args.output
+    tn_infected_persons = subsample_tn(tn_path, tn_subsampled_fn, num_sample=50000)
     print_log()
-
-    # simulate transmission network
-    tn_fn = "%s/transmission_network.txt" % args.output
-    tn_gemf_tmp_dir = "%s/GEMF_files" % args.output
-    print_log("===== TRANSMISSION NETWORK =====")
-    simulate_transmission_network_saapphiire(
-        # transition rates
-        args.tn_s_to_e_seed, args.tn_e_to_p1, args.tn_p1_to_p2, args.tn_p2_to_i1, args.tn_p2_to_a1, args.tn_i1_to_i2, args.tn_i1_to_h, args.tn_i2_to_h, args.tn_i2_to_r,
-        args.tn_a1_to_a2, args.tn_a2_to_r, args.tn_h_to_r, args.tn_s_to_e_by_e, args.tn_s_to_e_by_p1, args.tn_s_to_e_by_p2, args.tn_s_to_e_by_i1, args.tn_s_to_e_by_i2,
-        args.tn_s_to_e_by_a1, args.tn_s_to_e_by_a2,
-
-        # initial state frequencies
-        args.tn_freq_s, args.tn_freq_e, args.tn_freq_p1, args.tn_freq_p2, args.tn_freq_i1, args.tn_freq_i2, args.tn_freq_a1, args.tn_freq_a2, args.tn_freq_h, args.tn_freq_r,
-
-        # other simulation parameters
-        args.tn_num_seeds, args.tn_end_time,
-
-        # paths
-        cn_fn, tn_gemf_tmp_dir, tn_fn, args.path_gemf)
-    print_log()
-
+  
     # determine sample times
-    st_fn = "%s/sample_times.txt" % args.output
+    st_fn = "%s/subsample_times.txt" % args.output
     print_log("===== SAMPLE TIMES =====")
-    sample_first_ascertained(args.tn_end_time, "%s/%s" % (tn_gemf_tmp_dir, GEMF_OUTPUT_FN), st_fn)
+    sample_first_50k(gemf_output_path, st_fn, args.end_time, args.method, tn_infected_persons)
     print_log()
     
     # simulate phylogeny (unit of time)
-    pt_fn = "%s/tree.time.nwk" % args.output
+    pt_fn = "%s/tree.time.subsampled.nwk" % args.output
     print_log("===== PHYLOGENY =====")
-    simulate_phylogeny_coalescent_constant(args.pt_eff_pop_size, tn_fn, st_fn, pt_fn, args.path_coatran_constant)
+    # print(tn_subsampled_fn, st_fn, pt_fn)
+    simulate_phylogeny_coalescent_constant(args.pt_eff_pop_size, tn_subsampled_fn, st_fn, pt_fn, args.path_coatran_constant)
     print_log()
 
     # scale phylogeny (to unit of mutations)
-    pm_fn = "%s/tree.mutations.nwk" % args.output
+    pm_fn = "%s/tree.mutations.subsampled.nwk" % args.output
     print_log("===== MUTATION RATE =====")
     scale_tree_mutation_rate_constant(args.pm_mut_rate, pt_fn, pm_fn)
-    print_log()
-
-    # simulate sequences
-    seq_fn = "%s/sequences.fas" % args.output
-    print_log("===== SEQUENCES =====")
-    simulate_sequences_gtr(
-        args.seq_a2c, args.seq_a2g, args.seq_a2t, args.seq_c2g, args.seq_c2t, args.seq_g2t,
-        args.seq_f_a, args.seq_f_c, args.seq_f_g, args.seq_f_t,
-        args.seq_anc, pm_fn, seq_fn, args.path_seqgen)
     print_log()
 
     # gzip output files (if requested)
     if args.gzip_output:
         print_log("===== GZIP OUTPUT FILES =====")
-        fns_to_compress = [cn_fn, tn_fn, st_fn, pt_fn, pm_fn, seq_fn] + list(glob('%s/*' % tn_gemf_tmp_dir)) + list(glob('%s/seqgen*' % args.output))
+        fns_to_compress = [tn_subsampled_fn, st_fn, pt_fn, pm_fn] 
+        print(fns_to_compress)
         for fn in fns_to_compress:
             command = ['gzip', '-9', fn]
             if call(command) != 0:
